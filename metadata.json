@@ -1,0 +1,6 @@
+{
+  "name": "Michu",
+  "description": "Michu (ምቹ) - A multi-vendor restaurant pre-order and pickup platform for Hawassa, Ethiopia.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
