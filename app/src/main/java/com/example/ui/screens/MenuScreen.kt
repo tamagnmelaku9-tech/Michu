@@ -14,6 +14,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.ShoppingBag
@@ -22,7 +23,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
@@ -33,6 +36,8 @@ import com.example.R
 import com.example.data.model.Hotel
 import com.example.data.model.MenuItem
 import com.example.data.repository.HotelData
+import com.example.data.repository.OrderRepository
+import com.example.data.repository.PasscodeManager
 import com.example.ui.viewmodel.SharedViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -41,14 +46,25 @@ fun MenuScreen(
     hotelId: String,
     viewModel: SharedViewModel,
     onBackToHotels: () -> Unit,
-    onNavigateToCart: () -> Unit
+    onNavigateToCart: () -> Unit,
+    onNavigateToMerchantPortal: () -> Unit
 ) {
-    val hotel = remember(hotelId) { HotelData.HOTELS.find { it.id == hotelId } }
-    val fullMenu = remember(hotelId) { HotelData.getMenuForHotel(hotelId) }
+    val hotelsState by com.example.data.repository.OrderRepository.hotels.collectAsState()
+    val menuItemsState by com.example.data.repository.OrderRepository.menuItems.collectAsState()
+
+    val hotel = remember(hotelId, hotelsState) { hotelsState.find { it.id == hotelId } }
+    val fullMenu = remember(hotelId, menuItemsState) {
+        com.example.data.repository.OrderRepository.getMenuForHotel(hotelId)
+    }
 
     var searchQuery by remember { mutableStateOf("") }
     var selectedCategory by remember { mutableStateOf("All") }
     var showExitWarningDialog by remember { mutableStateOf(false) }
+
+    // Admin/Merchant Login Dialog State
+    var showAdminLoginDialog by remember { mutableStateOf(false) }
+    var enteredPasscode by remember { mutableStateOf("") }
+    var loginError by remember { mutableStateOf<String?>(null) }
 
     // Customization Modal State
     var itemToCustomize by remember { mutableStateOf<MenuItem?>(null) }
@@ -100,6 +116,24 @@ fun MenuScreen(
                         modifier = Modifier.testTag("menu_back_button")
                     ) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                actions = {
+                    IconButton(
+                        onClick = { showAdminLoginDialog = true },
+                        modifier = Modifier
+                            .testTag("hotel_admin_portal_button")
+                            .background(
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.08f),
+                                RoundedCornerShape(12.dp)
+                            )
+                            .padding(4.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Lock,
+                            contentDescription = "Hotel Admin Portal",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -308,6 +342,111 @@ fun MenuScreen(
             }
         )
     }
+
+    // Secure Hotel Admin Portal Dialog
+    if (showAdminLoginDialog) {
+        val context = LocalContext.current
+        AlertDialog(
+            onDismissRequest = {
+                showAdminLoginDialog = false
+                enteredPasscode = ""
+                loginError = null
+            },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Icon(Icons.Default.Lock, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    Text("Hotel Admin Portal", fontWeight = FontWeight.Bold, fontSize = 20.sp)
+                }
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(
+                        text = "Access is restricted. Enter the 4-digit passcode for ${hotel.name}.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
+                    )
+                    
+                    OutlinedTextField(
+                        value = enteredPasscode,
+                        onValueChange = {
+                            if (it.length <= 8) {
+                                enteredPasscode = it
+                                loginError = null
+                            }
+                        },
+                        label = { Text("Enter Passcode") },
+                        visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                            keyboardType = androidx.compose.ui.text.input.KeyboardType.Number
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("admin_passcode_field"),
+                        singleLine = true,
+                        isError = loginError != null
+                    )
+                    
+                    if (loginError != null) {
+                        Text(
+                            text = loginError!!,
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                    } else {
+                        val cashierPin = PasscodeManager.getCashierPasscode(context, hotelId)
+                        val ownerPin = PasscodeManager.getOwnerPasscode(context, hotelId)
+                        Text(
+                            text = "💡 Try default PINs for this hotel:\n• Cashier (ካሼር): $cashierPin\n• Owner (ባለቤት): $ownerPin",
+                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.8f),
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val cashierPin = PasscodeManager.getCashierPasscode(context, hotelId)
+                        val ownerPin = PasscodeManager.getOwnerPasscode(context, hotelId)
+                        
+                        if (enteredPasscode == cashierPin) {
+                            OrderRepository.loginMerchant(hotelId, "cashier")
+                            showAdminLoginDialog = false
+                            enteredPasscode = ""
+                            loginError = null
+                            onNavigateToMerchantPortal()
+                        } else if (enteredPasscode == ownerPin) {
+                            OrderRepository.loginMerchant(hotelId, "owner")
+                            showAdminLoginDialog = false
+                            enteredPasscode = ""
+                            loginError = null
+                            onNavigateToMerchantPortal()
+                        } else {
+                            loginError = "❌ Incorrect passcode. Please try again."
+                            enteredPasscode = ""
+                        }
+                    },
+                    modifier = Modifier.testTag("admin_login_confirm_button")
+                ) {
+                    Text("Login")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showAdminLoginDialog = false
+                        enteredPasscode = ""
+                        loginError = null
+                    },
+                    modifier = Modifier.testTag("admin_login_dismiss_button")
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
 }
 
 @Composable
@@ -315,7 +454,8 @@ fun MenuItemCard(menuItem: MenuItem, onAddClicked: () -> Unit) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp),
+            .padding(horizontal = 16.dp)
+            .alpha(if (menuItem.isAvailable) 1.0f else 0.55f),
         shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
     ) {
@@ -326,19 +466,39 @@ fun MenuItemCard(menuItem: MenuItem, onAddClicked: () -> Unit) {
             horizontalArrangement = Arrangement.spacedBy(16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Food visual card placeholder
+            // Food visual card placeholder with Sold Out overlay
             Box(
                 modifier = Modifier
                     .size(80.dp)
                     .clip(RoundedCornerShape(8.dp))
-                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.05f)),
+                    .background(
+                        if (!menuItem.isAvailable) Color.LightGray.copy(alpha = 0.2f)
+                        else MaterialTheme.colorScheme.primary.copy(alpha = 0.05f)
+                    ),
                 contentAlignment = Alignment.Center
             ) {
-                // Displaying a food icon or beautiful placeholder letter representation
-                Text(
-                    text = "🍲",
-                    fontSize = 32.sp
-                )
+                if (!menuItem.isAvailable) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color.Black.copy(alpha = 0.45f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "Sold Out\nአልቋል",
+                            color = Color.White,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            textAlign = TextAlign.Center,
+                            lineHeight = 13.sp
+                        )
+                    }
+                } else {
+                    Text(
+                        text = "🍲",
+                        fontSize = 32.sp
+                    )
+                }
             }
 
             Column(modifier = Modifier.weight(1f)) {
@@ -376,21 +536,40 @@ fun MenuItemCard(menuItem: MenuItem, onAddClicked: () -> Unit) {
                         fontSize = 15.sp
                     )
                     
-                    Button(
-                        onClick = onAddClicked,
-                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
-                        modifier = Modifier
-                            .height(36.dp)
-                            .testTag("add_item_button_${menuItem.id}"),
-                        shape = RoundedCornerShape(18.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Add,
-                            contentDescription = null,
-                            modifier = Modifier.size(14.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Add", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    if (menuItem.isAvailable) {
+                        Button(
+                            onClick = onAddClicked,
+                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
+                            modifier = Modifier
+                                .height(36.dp)
+                                .testTag("add_item_button_${menuItem.id}"),
+                            shape = RoundedCornerShape(18.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Add,
+                                contentDescription = null,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Add", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                    } else {
+                        Button(
+                            onClick = {},
+                            enabled = false,
+                            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
+                            modifier = Modifier
+                                .height(36.dp)
+                                .testTag("add_item_button_${menuItem.id}_disabled"),
+                            shape = RoundedCornerShape(18.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f),
+                                disabledContainerColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f),
+                                disabledContentColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                            )
+                        ) {
+                            Text("Sold Out", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        }
                     }
                 }
             }

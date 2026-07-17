@@ -6,6 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Lock
@@ -32,17 +33,16 @@ import com.example.data.repository.HotelData
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HotelSelectionScreen(
-    onHotelSelected: (String) -> Unit,
-    onMerchantPortalClicked: () -> Unit
+    onHotelSelected: (String) -> Unit
 ) {
     var searchQuery by remember { mutableStateOf("") }
-    val hotels = remember { HotelData.getHotels() }
+    val hotelsState by com.example.data.repository.OrderRepository.hotels.collectAsState()
 
-    val filteredHotels = remember(searchQuery) {
+    val filteredHotels = remember(searchQuery, hotelsState) {
         if (searchQuery.isBlank()) {
-            hotels
+            hotelsState
         } else {
-            hotels.filter {
+            hotelsState.filter {
                 it.name.contains(searchQuery, ignoreCase = true) ||
                         it.branchName.contains(searchQuery, ignoreCase = true)
             }
@@ -72,24 +72,6 @@ fun HotelSelectionScreen(
                             text = "Hawassa Pre-Order & Pickup",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f)
-                        )
-                    }
-                },
-                actions = {
-                    IconButton(
-                        onClick = onMerchantPortalClicked,
-                        modifier = Modifier
-                            .testTag("merchant_portal_button")
-                            .background(
-                                MaterialTheme.colorScheme.primary.copy(alpha = 0.1f),
-                                RoundedCornerShape(12.dp)
-                            )
-                            .padding(4.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Storefront,
-                            contentDescription = "Merchant Portal",
-                            tint = MaterialTheme.colorScheme.primary
                         )
                     }
                 },
@@ -201,48 +183,6 @@ fun HotelSelectionScreen(
                     }
                 )
             }
-
-            // Cashier shortcut footer
-            item {
-                Card(
-                    onClick = onMerchantPortalClicked,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 16.dp)
-                        .testTag("merchant_portal_banner_card"),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.secondary.copy(alpha = 0.15f)
-                    ),
-                    shape = RoundedCornerShape(16.dp)
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .padding(16.dp)
-                            .fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(16.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Lock,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(32.dp)
-                        )
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Are you a Cashier / Merchant?",
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                            Text(
-                                text = "Log in with your passcode to manage pre-orders, receive live alerts, and chat with customers.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.8f)
-                            )
-                        }
-                    }
-                }
-            }
         }
     }
 }
@@ -301,6 +241,26 @@ fun HotelCard(hotel: Hotel, onClick: () -> Unit) {
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                 )
+                
+                // Real-time Cashier Online/Offline Status Indicator
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.padding(top = 4.dp, bottom = 4.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .clip(CircleShape)
+                            .background(if (hotel.isOnline) Color(0xFF2E7D32) else Color.Gray)
+                    )
+                    Text(
+                        text = if (hotel.isOnline) "🟢 መስመር ላይ (Active)" else "🔴 ከመስመር ውጭ (Offline)",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (hotel.isOnline) Color(0xFF2E7D32) else Color.Gray
+                    )
+                }
                 
                 Spacer(modifier = Modifier.height(6.dp))
                 

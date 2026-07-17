@@ -16,7 +16,11 @@ data class Hotel(
     val logoResId: Int? = null,
     val isClosed: Boolean = false,
     val prepTimeMinutes: Int = 30,
-    val bankDetails: BankDetails
+    val bankDetails: BankDetails,
+    val cashierPasscode: String = "1234",
+    val ownerPasscode: String = "5678",
+    val isOnline: Boolean = false,
+    val lastActive: Long = 0L
 ) : Serializable
 
 data class MenuItem(
@@ -28,7 +32,8 @@ data class MenuItem(
     val category: String, // "Breakfast" | "Meat" | "All"
     val image: String = "",
     val imageResId: Int? = null,
-    val description: String
+    val description: String,
+    val isAvailable: Boolean = true
 ) : Serializable
 
 data class CartItem(

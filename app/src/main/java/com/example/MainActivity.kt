@@ -24,6 +24,8 @@ import com.example.ui.viewmodel.SharedViewModel
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Initialize OrderRepository with applicationContext for notifications
+        com.example.data.repository.OrderRepository.initialize(applicationContext)
         enableEdgeToEdge()
         setContent {
             MyApplicationTheme {
@@ -42,9 +44,6 @@ class MainActivity : ComponentActivity() {
                                 onHotelSelected = { hotelId ->
                                     sharedViewModel.selectHotel(hotelId)
                                     navController.navigate("menu/$hotelId")
-                                },
-                                onMerchantPortalClicked = {
-                                    navController.navigate("merchant_portal")
                                 }
                             )
                         }
@@ -59,7 +58,8 @@ class MainActivity : ComponentActivity() {
                                 hotelId = hotelId,
                                 viewModel = sharedViewModel,
                                 onBackToHotels = { navController.popBackStack() },
-                                onNavigateToCart = { navController.navigate("cart") }
+                                onNavigateToCart = { navController.navigate("cart") },
+                                onNavigateToMerchantPortal = { navController.navigate("merchant_portal") }
                             )
                         }
 

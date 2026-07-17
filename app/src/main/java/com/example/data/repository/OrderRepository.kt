@@ -6,8 +6,11 @@ import android.media.ToneGenerator
 import android.util.Log
 import com.example.data.model.CartItem
 import com.example.data.model.ChatMessage
+import com.example.data.model.Hotel
+import com.example.data.model.MenuItem
 import com.example.data.model.Order
 import com.example.data.model.OrderStatus
+import com.example.utils.NotificationHelper
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -26,13 +29,27 @@ object OrderRepository {
     private val _isAlarmMuted = MutableStateFlow(false)
     val isAlarmMuted: StateFlow<Boolean> = _isAlarmMuted.asStateFlow()
 
+    // Dynamic Lists of Hotels and Menu Items to support real-time online status and item availability
+    private val _hotels = MutableStateFlow<List<Hotel>>(HotelData.HOTELS)
+    val hotels: StateFlow<List<Hotel>> = _hotels.asStateFlow()
+
+    private val _menuItems = MutableStateFlow<List<MenuItem>>(HotelData.MENU_ITEMS)
+    val menuItems: StateFlow<List<MenuItem>> = _menuItems.asStateFlow()
+
     // Active merchant hotel to listen to
     private val _activeMerchantHotelId = MutableStateFlow<String?>(null)
     val activeMerchantHotelId: StateFlow<String?> = _activeMerchantHotelId.asStateFlow()
 
+    // Active merchant role: "cashier" or "owner"
+    private val _activeMerchantRole = MutableStateFlow<String?>(null)
+    val activeMerchantRole: StateFlow<String?> = _activeMerchantRole.asStateFlow()
+
     private var toneGenerator: ToneGenerator? = null
     private var alarmJob: Job? = null
+    private var heartbeatJob: Job? = null
     private val repositoryScope = CoroutineScope(Dispatchers.Default)
+
+    private var appContext: Context? = null
 
     init {
         // Pre-populate with some realistic mock orders to make first-launch and merchant dashboard fully testable
@@ -40,6 +57,101 @@ object OrderRepository {
         
         // Start the automated alarm monitor
         startAlarmMonitor()
+    }
+
+    fun initialize(context: Context) {
+        appContext = context.applicationContext
+        NotificationHelper.createNotificationChannel(context)
+        Log.d(TAG, "OrderRepository initialized with Context")
+    }
+
+    fun loginMerchant(hotelId: String, role: String) {
+        _activeMerchantHotelId.value = hotelId
+        _activeMerchantRole.value = role
+        Log.d(TAG, "Merchant logged in: hotelId=$hotelId, role=$role")
+        
+        // Cashier Heartbeat: set online and start the periodic 60-second update job
+        startHeartbeat(hotelId)
+    }
+
+    fun logoutMerchant() {
+        val hotelId = _activeMerchantHotelId.value
+        if (hotelId != null) {
+            setHotelOnlineStatus(hotelId, isOnline = false)
+        }
+        _activeMerchantHotelId.value = null
+        _activeMerchantRole.value = null
+        heartbeatJob?.cancel()
+        Log.d(TAG, "Merchant logged out")
+    }
+
+    private fun startHeartbeat(hotelId: String) {
+        heartbeatJob?.cancel()
+        heartbeatJob = repositoryScope.launch {
+            try {
+                while (true) {
+                    setHotelOnlineStatus(hotelId, isOnline = true)
+                    delay(60000) // update lastActive and isOnline every 60 seconds
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Heartbeat interrupted for hotel: $hotelId", e)
+            }
+        }
+    }
+
+    fun setHotelOnlineStatus(hotelId: String, isOnline: Boolean) {
+        _hotels.value = _hotels.value.map { hotel ->
+            if (hotel.id == hotelId) {
+                hotel.copy(isOnline = isOnline, lastActive = System.currentTimeMillis())
+            } else {
+                hotel
+            }
+        }
+    }
+
+    fun toggleMenuItemAvailability(itemId: String, isAvailable: Boolean) {
+        _menuItems.value = _menuItems.value.map { item ->
+            if (item.id == itemId) {
+                item.copy(isAvailable = isAvailable)
+            } else {
+                item
+            }
+        }
+        Log.d(TAG, "Menu item $itemId availability updated to: $isAvailable")
+    }
+
+    fun getMenuForHotel(hotelId: String): List<MenuItem> {
+        val items = _menuItems.value.filter { it.hotelId == hotelId }
+        if (items.isEmpty()) {
+            val fallback = listOf(
+                MenuItem(
+                    id = "bf_chechebsa_gen_$hotelId",
+                    hotelId = hotelId,
+                    name = "Standard Chechebsa",
+                    englishName = "Standard Chechebsa",
+                    price = 220.00,
+                    category = "Breakfast",
+                    description = "Shredded flatbread cooked with local herbal spiced butter and hot berbere, served with a hint of honey.",
+                    isAvailable = true
+                ),
+                MenuItem(
+                    id = "meat_tibs_gen_$hotelId",
+                    hotelId = hotelId,
+                    name = "Sautéed Beef Tibs",
+                    englishName = "Sautéed Beef Tibs",
+                    price = 450.00,
+                    category = "Meat",
+                    description = "Fresh juicy beef chunks sautéed with onions, green chilies, garlic, and rosemary herbs. Extremely aromatic.",
+                    isAvailable = true
+                )
+            )
+            // Save fallback to current menu list to keep it consistent
+            val currentList = _menuItems.value.toMutableList()
+            currentList.addAll(fallback)
+            _menuItems.value = currentList
+            return fallback
+        }
+        return items
     }
 
     fun setActiveMerchantHotel(hotelId: String?) {
@@ -52,6 +164,15 @@ object OrderRepository {
         Log.d(TAG, "Alarm muted state changed to: $muted")
     }
 
+    fun cancelOrder(orderId: String) {
+        updateOrderStatus(orderId, OrderStatus.CANCELLED)
+    }
+
+    fun clearAllOrdersForHotel(hotelId: String) {
+        _orders.value = _orders.value.filter { it.hotelId != hotelId }
+        Log.d(TAG, "Cleared all orders for hotel: $hotelId")
+    }
+
     fun placeOrder(order: Order) {
         val currentList = _orders.value.toMutableList()
         currentList.add(order)
@@ -60,12 +181,30 @@ object OrderRepository {
         
         // When a new order is placed, unmute the alarm automatically to notify the merchant!
         _isAlarmMuted.value = false
+
+        // Notify Cashier dynamically even if screen is locked
+        appContext?.let { context ->
+            val activeHotel = _activeMerchantHotelId.value
+            if (activeHotel == order.hotelId) {
+                NotificationHelper.triggerNotification(
+                    context = context,
+                    title = "🚨 New Pre-Order #${order.id}",
+                    message = "New pre-order received from ${order.customerName} for pickup at ${order.pickupTime}!"
+                )
+            } else {
+                // Also trigger general test alert so tester gets visual confirmation of local push notification
+                NotificationHelper.triggerNotification(
+                    context = context,
+                    title = "Michu: Pre-Order Placed!",
+                    message = "Your pre-order #${order.id} for ${order.customerName} has been submitted successfully."
+                )
+            }
+        }
     }
 
     fun updateOrderStatus(orderId: String, status: OrderStatus) {
         _orders.value = _orders.value.map { order ->
             if (order.id == orderId) {
-                // If the order becomes prepared/ready, we might append an automated status message to chat
                 val updatedChat = order.chatMessages.toMutableList()
                 val messageText = when (status) {
                     OrderStatus.PREPARING -> "🍳 We are preparing your food! It will be ready in approximately ${HotelData.HOTELS.find { it.id == order.hotelId }?.prepTimeMinutes ?: 30} minutes."
@@ -83,6 +222,15 @@ object OrderRepository {
                             message = messageText,
                             timestamp = System.currentTimeMillis()
                         )
+                    )
+                }
+
+                // Trigger push notification to Customer for status update
+                appContext?.let { context ->
+                    NotificationHelper.triggerNotification(
+                        context = context,
+                        title = "Michu (ምቹ): Order Updated!",
+                        message = "Your order #${order.id} status is now: ${status.displayName}."
                     )
                 }
 
@@ -119,6 +267,26 @@ object OrderRepository {
                     order.paymentStatus
                 }
 
+                // Trigger notifications based on sender
+                appContext?.let { context ->
+                    if (sender == "merchant") {
+                        NotificationHelper.triggerNotification(
+                            context = context,
+                            title = "Michu: New message from Cashier!",
+                            message = text
+                        )
+                    } else if (sender == "customer") {
+                        val activeHotel = _activeMerchantHotelId.value
+                        if (activeHotel == order.hotelId) {
+                            NotificationHelper.triggerNotification(
+                                context = context,
+                                title = "Michu Chat: #${order.id}",
+                                message = "${order.customerName}: $text"
+                            )
+                        }
+                    }
+                }
+
                 order.copy(
                     chatMessages = updatedChat,
                     paymentStatus = newPaymentStatus,
@@ -140,29 +308,33 @@ object OrderRepository {
                 Log.e(TAG, "Failed to initialize ToneGenerator", e)
             }
 
-            while (true) {
-                val merchantHotelId = _activeMerchantHotelId.value
-                val isMuted = _isAlarmMuted.value
-                
-                if (merchantHotelId != null && !isMuted) {
-                    // Check if there are any PENDING orders for the merchant's hotel
-                    val hasPendingOrders = _orders.value.any { 
-                        it.hotelId == merchantHotelId && it.orderStatus == OrderStatus.PENDING 
-                    }
+            try {
+                while (true) {
+                    val merchantHotelId = _activeMerchantHotelId.value
+                    val isMuted = _isAlarmMuted.value
                     
-                    if (hasPendingOrders) {
-                        try {
-                            // Play a double high-frequency beep to alert the cashier
-                            toneGenerator?.startTone(ToneGenerator.TONE_CDMA_PIP, 200)
-                            delay(350)
-                            toneGenerator?.startTone(ToneGenerator.TONE_CDMA_PIP, 200)
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Tone playback failed", e)
+                    if (merchantHotelId != null && !isMuted) {
+                        // Check if there are any PENDING orders for the merchant's hotel
+                        val hasPendingOrders = _orders.value.any { 
+                            it.hotelId == merchantHotelId && it.orderStatus == OrderStatus.PENDING 
+                        }
+                        
+                        if (hasPendingOrders) {
+                            try {
+                                // Play a double high-frequency beep to alert the cashier
+                                toneGenerator?.startTone(ToneGenerator.TONE_CDMA_PIP, 200)
+                                delay(350)
+                                toneGenerator?.startTone(ToneGenerator.TONE_CDMA_PIP, 200)
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Tone playback failed", e)
+                            }
                         }
                     }
+                    // Sleep 2 seconds between checks/beeps
+                    delay(2000)
                 }
-                // Sleep 2 seconds between checks/beeps
-                delay(2000)
+            } catch (e: Exception) {
+                Log.e(TAG, "Alarm monitor loop interrupted", e)
             }
         }
     }
